@@ -27,8 +27,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import dicom_export
 import noise_model
 import state as state_mod
+from common.imaging import to_preview_image
 from common.protocol import Command, Frame, PacketStreamParser, encode
 
 CAPTURE_OUTPUT_DIR = Path(__file__).parent / "captures"
@@ -36,12 +38,7 @@ IMAGE_WIDTH, IMAGE_HEIGHT = 512, 512
 
 
 def _save_capture_png(pixels, path: Path) -> None:
-    from PIL import Image
-
-    # 12-bit -> 8-bit just for a quick-look PNG; the DICOM export step
-    # (added later) will carry the full-precision pixel data instead.
-    img8 = (pixels.astype("float32") / 4095.0 * 255.0).clip(0, 255).astype("uint8")
-    Image.fromarray(img8, mode="L").save(path)
+    to_preview_image(pixels, bit_depth=12).save(path)
 
 
 class XraySourceSession:
@@ -101,30 +98,34 @@ class XraySourceSession:
         pixels = noise_model.synthesize_capture(IMAGE_WIDTH, IMAGE_HEIGHT, dose_factor)
 
         CAPTURE_OUTPUT_DIR.mkdir(exist_ok=True)
-        out_path = CAPTURE_OUTPUT_DIR / f"capture_{uuid.uuid4().hex[:8]}.png"
-        _save_capture_png(pixels, out_path)
+        stem = f"capture_{uuid.uuid4().hex[:8]}"
+        png_path = CAPTURE_OUTPUT_DIR / f"{stem}.png"
+        dcm_path = CAPTURE_OUTPUT_DIR / f"{stem}.dcm"
+        _save_capture_png(pixels, png_path)
+
+        # Always build + save the DICOM object locally, independent of
+        # whether it also gets sent to a live viewer - this is what lets
+        # the console app's "compare" view decode the *actual* DICOM
+        # bytes back into an image, rather than just re-showing the PNG.
+        ds = dicom_export.build_dataset(s, pixels)
+        ds.save_as(dcm_path, enforce_file_format=True)
 
         s.accumulate_heat()
         s.exposure_state = "OFF"
         self.send(Command.EXPOSURE_STATE, s.exposure_state)
         self.send(Command.TUBE_TEMP, s.tube_temp)
-        self.send(Command.CAPTURE_DONE, {"path": str(out_path), "dose_factor": dose_factor})
+        self.send(Command.CAPTURE_DONE, {
+            "path": str(png_path),
+            "dicom_path": str(dcm_path),
+            "dose_factor": dose_factor,
+        })
 
         if self.dicom_export:
-            self._export_dicom(pixels)
+            ok, message = dicom_export.send_to_viewer(ds, host=self.dicom_host, port=self.dicom_port)
+            self.log(f"   DICOM export {'OK' if ok else 'FAILED'}: {message}")
         # Denoising inference is wired in here once the pipeline/denoise
         # model exists (see pipeline/PLAN.md step 8) - it would run on
-        # `pixels` before export, alongside or instead of the raw capture.
-
-    def _export_dicom(self, pixels) -> None:
-        try:
-            import dicom_export
-        except ImportError as exc:
-            self.log(f"   (DICOM export skipped: {exc})")
-            return
-        ds = dicom_export.build_dataset(self.state, pixels)
-        ok, message = dicom_export.send_to_viewer(ds, host=self.dicom_host, port=self.dicom_port)
-        self.log(f"   DICOM export {'OK' if ok else 'FAILED'}: {message}")
+        # `pixels` before both the PNG and DICOM are built.
 
     def run(self) -> None:
         self.log("connected")
