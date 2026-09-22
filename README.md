@@ -1,21 +1,32 @@
 # DICOM AI App
 
-Personal project: an original X-ray source simulator + console, feeding
-standard DICOM images into a real DICOM viewer, with an AI denoising model
-(in progress) planned to sit in that pipeline. See
+Personal project simulating an X-ray source + operating console, feeding
+standard DICOM images into a real PC DICOM viewer, with an AI denoising
+model (in progress) planned to sit in that pipeline. See
 [`pipeline/PLAN.md`](pipeline/PLAN.md) for the full design and the rules
 this project follows (in particular: no vendor-specific protocol, assets,
 or naming from any real product anywhere in this repo).
 
 > Learning/research project. Not for clinical use.
 
+## Architecture
+
+```
+[Android Kotlin tablet console] --TCP--> [Python source simulator] --DICOM C-STORE--> [PC viewer: dicom-xray-viewer]
+```
+
+The tablet console is the operator-facing app (kVp/mA/mode/capture); the
+PC viewer displays/analyzes the resulting images. The two are separate
+processes/devices on purpose, matching how a real X-ray room is laid out.
+
 ## Layout
 
 | Path | What |
 |---|---|
-| [`common/`](common) | Shared protocol (`protocol.py`) and pixel/preview conversion (`imaging.py`) used by both `simulator/` and `console/` |
-| [`simulator/`](simulator) | TCP server simulating an X-ray source: state machine, dose-dependent noise synthesis, DICOM export | 
-| [`console/`](console) | Tkinter desktop console: drives the simulator, compare view (PNG vs DICOM round-trip), capture filmstrip |
+| [`common/`](common) | Shared protocol (`protocol.py`) and pixel/preview conversion (`imaging.py`) used by `simulator/` and `console/` |
+| [`simulator/`](simulator) | TCP server simulating an X-ray source: state machine, dose-dependent noise synthesis, DICOM export |
+| [`android-console/`](android-console) | **Planned** — the real operating console, an Android Kotlin tablet app (design doc only so far, not yet buildable in this dev environment; see its `PLAN.md`) |
+| [`console/`](console) | Tkinter desktop console — a prototype/testing tool for driving the simulator from a PC without a tablet, kept around after `android-console/` exists too |
 | [`pipeline/`](pipeline) | Project plan; the denoising model training/ONNX/TensorRT pipeline lands here |
 
 ## Quick start
@@ -57,6 +68,9 @@ project. See `simulator/README.md` for details.
 - [x] Console app with live controls, compare view, capture filmstrip
 - [x] Standard DICOM export (C-STORE), verified against a real DICOM receiver
 - [x] Docker Compose + Makefile for the simulator
+- [ ] Android tablet console (design doc written, `android-console/PLAN.md`;
+      no Java/Android SDK/Gradle in this dev environment, so not yet
+      buildable here — needs Android Studio)
 - [ ] Denoising model training pipeline
 - [ ] ONNX conversion + verification
 - [ ] TensorRT benchmark (blocked on access to an NVIDIA GPU - this
