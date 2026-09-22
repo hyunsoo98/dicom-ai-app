@@ -1,0 +1,14 @@
+services:
+  simulator:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    ports:
+      - "5588:5588"
+    volumes:
+      - ./simulator/captures:/app/simulator/captures
+    restart: unless-stopped
+
+# The console app (Tkinter) needs a display, so it isn't containerized here
+# - run it on the host against the simulator above:
+#   python console/console_app.py --port 5588
