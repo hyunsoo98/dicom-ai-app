@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import argparse
 import socket
+import sys
 import threading
+from pathlib import Path
 
-from protocol import Command, PacketStreamParser, encode
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from common.protocol import Command, PacketStreamParser, encode
 
 
 def _reader(sock: socket.socket) -> None:

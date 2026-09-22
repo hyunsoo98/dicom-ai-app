@@ -18,16 +18,18 @@ Then connect with console_client.py (or your own tool) to the same port.
 from __future__ import annotations
 
 import argparse
-import io
 import socket
+import sys
 import threading
 import time
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import noise_model
 import state as state_mod
-from protocol import Command, Frame, PacketStreamParser, encode
+from common.protocol import Command, Frame, PacketStreamParser, encode
 
 CAPTURE_OUTPUT_DIR = Path(__file__).parent / "captures"
 IMAGE_WIDTH, IMAGE_HEIGHT = 512, 512
@@ -45,13 +47,17 @@ def _save_capture_png(pixels, path: Path) -> None:
 class XraySourceSession:
     """One connected console's view of the simulated source."""
 
-    def __init__(self, sock: socket.socket, addr, verbose: bool = True):
+    def __init__(self, sock: socket.socket, addr, verbose: bool = True,
+                 dicom_export: bool = False, dicom_host: str = "127.0.0.1", dicom_port: int = 11114):
         self.sock = sock
         self.addr = addr
         self.verbose = verbose
         self.state = state_mod.XraySourceState()
         self.parser = PacketStreamParser()
         self._lock = threading.Lock()
+        self.dicom_export = dicom_export
+        self.dicom_host = dicom_host
+        self.dicom_port = dicom_port
 
     def log(self, msg: str) -> None:
         if self.verbose:
@@ -103,8 +109,22 @@ class XraySourceSession:
         self.send(Command.EXPOSURE_STATE, s.exposure_state)
         self.send(Command.TUBE_TEMP, s.tube_temp)
         self.send(Command.CAPTURE_DONE, {"path": str(out_path), "dose_factor": dose_factor})
-        # Denoising inference + DICOM export are wired in here once the
-        # pipeline/denoise model exists (see pipeline/PLAN.md step 8).
+
+        if self.dicom_export:
+            self._export_dicom(pixels)
+        # Denoising inference is wired in here once the pipeline/denoise
+        # model exists (see pipeline/PLAN.md step 8) - it would run on
+        # `pixels` before export, alongside or instead of the raw capture.
+
+    def _export_dicom(self, pixels) -> None:
+        try:
+            import dicom_export
+        except ImportError as exc:
+            self.log(f"   (DICOM export skipped: {exc})")
+            return
+        ds = dicom_export.build_dataset(self.state, pixels)
+        ok, message = dicom_export.send_to_viewer(ds, host=self.dicom_host, port=self.dicom_port)
+        self.log(f"   DICOM export {'OK' if ok else 'FAILED'}: {message}")
 
     def run(self) -> None:
         self.log("connected")
@@ -182,15 +202,19 @@ DISPATCH = {
 }
 
 
-def serve(host: str, port: int) -> None:
+def serve(host: str, port: int, *, dicom_export: bool = False,
+          dicom_host: str = "127.0.0.1", dicom_port: int = 11114) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((host, port))
         server.listen()
         print(f"X-ray source simulator listening on {host}:{port}")
+        if dicom_export:
+            print(f"DICOM export on CAPTURE -> {dicom_host}:{dicom_port}")
         while True:
             conn, addr = server.accept()
-            session = XraySourceSession(conn, addr)
+            session = XraySourceSession(conn, addr, dicom_export=dicom_export,
+                                         dicom_host=dicom_host, dicom_port=dicom_port)
             threading.Thread(target=session.run, daemon=True).start()
 
 
@@ -198,8 +222,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5588)
+    ap.add_argument("--dicom-export", action="store_true",
+                     help="on CAPTURE, also send the image to a DICOM receiver over C-STORE")
+    ap.add_argument("--dicom-host", default="127.0.0.1")
+    ap.add_argument("--dicom-port", type=int, default=11114,
+                     help="matches DicomXrayViewer's device-bridge default port")
     args = ap.parse_args()
     try:
-        serve(args.host, args.port)
+        serve(args.host, args.port, dicom_export=args.dicom_export,
+              dicom_host=args.dicom_host, dicom_port=args.dicom_port)
     except KeyboardInterrupt:
         pass
